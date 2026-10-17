@@ -233,7 +233,10 @@ try {
   Say '口径：对库的**临时副本**注入故障 → 跑自测 → 必须报红，且必须是期望的那一条。'
   Say ''
 
-  $srcText = [System.IO.File]::ReadAllText($srcModule, [System.Text.Encoding]::UTF8)
+  # 行尾规范化（2026-10-18 CI 发现）：Windows runner 的 core.autocrlf 可能把文件检出成 CRLF，
+  # 而注入正则 `(?m)^...$` 依赖 LF（`$` 匹配 \n 前，CRLF 下 \r 挡在前面）⇒ 会全部 INJECT-MISS。
+  # 这里统一成 LF 再匹配；写回临时副本用 UTF8 无 BOM，不影响被注入的语义。
+  $srcText = ([System.IO.File]::ReadAllText($srcModule, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
   $ok = 0; $bad = 0; $miss = 0
 
   foreach ($sc in $scenarios) {
@@ -252,7 +255,7 @@ try {
     if ($targetRel -ne 'WriteGuard.psm1' -or $testRel -ne 'SelfTest.ps1') {
       $pkgDir = Join-Path $dir 'pkg'
       Copy-Item -LiteralPath $rootDir -Destination $pkgDir -Recurse
-      $injectText = [System.IO.File]::ReadAllText((Join-Path $pkgDir $targetRel), [System.Text.Encoding]::UTF8)
+      $injectText = ([System.IO.File]::ReadAllText((Join-Path $pkgDir $targetRel), [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
     }
 
     $rx = [regex]([string]$sc['From'])

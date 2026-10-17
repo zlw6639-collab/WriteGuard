@@ -178,7 +178,7 @@ try {
     $prevEnc2 = [Console]::OutputEncoding
     try {
       # 敌意编码 = 系统 ANSI（中文 Windows=936、英文 Windows=1252）；避免依赖 codepage 936 是否注册
-      [Console]::OutputEncoding = [System.Text.Encoding]::Default   # GBK：U+21B3 无法表示
+      [Console]::OutputEncoding = [System.Text.Encoding]::ASCII   # 敌意：中文/↳ 无法表示（跨平台可用）   # GBK：U+21B3 无法表示
       $r10 = Run-PruneOut $d10 @()
       Assert-Eq $r10.Code 0 '退出码'
       Assert-Eq ([regex]::IsMatch($r10.Out, '分属 1 个目标')) $true '中文输出必须可读（不许变成 ?）'

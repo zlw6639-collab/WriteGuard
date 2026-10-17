@@ -1,0 +1,7 @@
+# 行尾统一：源码用 LF（跨平台一致）
+# 2026-10-18 CI 发现：Windows runner 的 core.autocrlf=true 会把 LF 转 CRLF，
+# 而 MutationCheck 的 `(?m)^...$` 注入正则依赖 LF（`$` 匹配 \n 前，CRLF 下 \r 挡在前面）⇒ 全部 INJECT-MISS。
+* text=auto eol=lf
+
+# .bat 必须 CRLF（cmd 对 LF 的批处理容错差）
+*.bat text eol=crlf
