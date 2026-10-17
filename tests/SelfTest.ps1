@@ -232,8 +232,17 @@ $r = Invoke-WgWrite -Path $Target -Commit -Lock -Mutator $mut.GetNewClosure()
     function Start-Worker([string]$id, [int]$sleepMs) {
       $out = Join-Path $script:tmp "mp-$id.txt"
       if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
-      $p = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $worker, '-Module', $mod,
-          '-Target', $f, '-Id', $id, '-Out', $out, '-SleepMs', $sleepMs) -PassThru -WindowStyle Hidden
+      # ⚠️ Linux/macOS 版 pwsh 的 Start-Process **不支持 -WindowStyle**（会抛
+      #    "The parameter '-WindowStyle' is not supported..."，2026-10-18 CI 抓到）。
+      #    所以只在 Windows 上加窗口样式。
+      $spArgs = @{
+        FilePath = 'pwsh'
+        ArgumentList = @('-NoProfile', '-File', $worker, '-Module', $mod,
+          '-Target', $f, '-Id', $id, '-Out', $out, '-SleepMs', $sleepMs)
+        PassThru = $true
+      }
+      if ($IsWindows) { $spArgs['WindowStyle'] = 'Hidden' }
+      $p = Start-Process @spArgs
       return [pscustomobject]@{ Proc = $p; Out = $out; Id = $id }
     }
 
