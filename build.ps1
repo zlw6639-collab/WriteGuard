@@ -65,7 +65,7 @@ try {
   [void]$lines.Add(('生成时间：' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')))
   [void]$lines.Add(('文件数：{0}' -f $files.Count))
   [void]$lines.Add('')
-  [void]$lines.Add('⚠️ **候选补丁，不是正式发布包。** Windows 五套件全绿（57/30/5/0 漂移/10）；')
+  [void]$lines.Add('⚠️ **候选补丁，不是正式发布包。** Windows 五套件全绿（58/31/5/0 漂移/10）；')
   [void]$lines.Add('   崩溃注入 / 原子写受环境限制未验证（探针记 BLOCKED/NOT_TESTED，不是通过）；Unix 真实文件系统未验证。')
   [void]$lines.Add('⚠️ 本清单不含 *-latest.txt / 探针 report.json（运行产物）与 .writeguard（本地备份）。')
   [void]$lines.Add('校验：对每行按 `Get-FileHash -Algorithm SHA256` 重算，全部一致才算包没被动过。')
@@ -96,8 +96,8 @@ WriteGuard 审查材料 —— 版本指纹
 生成时间   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 psm1 时间  : $($psm1.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))
 psm1 SHA256: $psm1Hash
-自测       : 57 / 57（Windows · PowerShell 7.6.6 · cp65001 / cp936 / cp437 三档）
-元验证     : 30 / 30（29 注入 + 1 噪声）
+自测       : 58 / 58（Windows · PowerShell 7.6.6 · cp65001 / cp936 / cp437 三档）
+元验证     : 31 / 31（30 注入 + 1 噪声）
 CLI        : 5 / 5（含 CLI-5 敌意控制台）
 备份保留   : 10 / 10（含 ⑩ 敌意控制台）
 原子写探针 : PASS 5 / BLOCKED 1 / NOT_TESTED 1（**不是通过**，见 04 设计审查）
