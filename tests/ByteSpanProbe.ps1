@@ -49,12 +49,17 @@ function New-Scenario([string]$id) {
 function Add-Result($sc) { [void]$script:results.Add($sc) }
 
 function Get-Encoding([string]$name) {
+  # ★ 严格回退（2026-10-18 审计 P1）：编码 **和** 解码都抛异常，不静默替换成 ?。
+  #   UTF8Encoding 的 throwOnInvalidBytes 同时作用于编码与解码；
+  #   其它编码用 ExceptionFallback 显式配置。
+  $encFallback = [System.Text.EncoderFallback]::ExceptionFallback
+  $decFallback = [System.Text.DecoderFallback]::ExceptionFallback
   switch ($name) {
-    'utf8'    { return [System.Text.UTF8Encoding]::new($false) }
-    'utf8-bom' { return [System.Text.UTF8Encoding]::new($true) }
-    'gb2312'  { return [System.Text.Encoding]::GetEncoding('gb2312') }
-    'gb18030' { return [System.Text.Encoding]::GetEncoding('gb18030') }
-    default   { throw "不认识的编码：$name" }
+    'utf8'     { return [System.Text.UTF8Encoding]::new($false, $true) }
+    'utf8-bom' { return [System.Text.UTF8Encoding]::new($true, $true) }
+    'gb2312'   { return [System.Text.Encoding]::GetEncoding('gb2312', $encFallback, $decFallback) }
+    'gb18030'  { return [System.Text.Encoding]::GetEncoding('gb18030', $encFallback, $decFallback) }
+    default    { throw "不认识的编码：$name" }
   }
 }
 
@@ -80,6 +85,12 @@ function Get-ByteSpan([string]$Text, [int]$CharStart, [int]$CharEnd, [System.Tex
   }
 }
 
+# 断言映射区间的解码结果确实等于匹配文本；不是就抛（拒绝，不能继续生成新文件）
+function Assert-ByteSpan($span) {
+  if (-not $span.Verified) { throw '映射区间解码后 != 匹配文本 ⇒ 拒绝（不许基于错误区间生成新文件）' }
+  return $span
+}
+
 # 在原始字节上做替换：前缀（含 BOM）+ 新文本字节 + 后缀（原样）
 function New-ReplacedBytes([byte[]]$Raw, $span, [byte[]]$ReplBytes) {
   $tailStart = $span.StartByte + $span.MatchLen
@@ -92,8 +103,11 @@ function New-ReplacedBytes([byte[]]$Raw, $span, [byte[]]$ReplBytes) {
 }
 
 try {
-  $work = if ($WorkDir) { $WorkDir } else { Join-Path ([System.IO.Path]::GetTempPath()) ('wg-bytespan-probe-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
-  if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+  # ★ 目录安全（2026-10-18 审计 P0）：**绝不删除用户传入的 -WorkDir**。
+  #   只在它下面建一个本次运行专属的唯一子目录；清理也只删这个子目录。
+  $base = if ($WorkDir) { $WorkDir } else { [System.IO.Path]::GetTempPath() }
+  if (-not (Test-Path -LiteralPath $base)) { [void][System.IO.Directory]::CreateDirectory($base) }
+  $work = Join-Path $base ('wg-bytespan-probe-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
   [void][System.IO.Directory]::CreateDirectory($work)
   $report = if ($ReportTo) { $ReportTo } else { Join-Path $PSScriptRoot 'ByteSpanProbe-report.json' }
 
@@ -145,8 +159,9 @@ try {
       if ($ms.Count -ne 1) { throw "预期恰好 1 处匹配，实际 $($ms.Count)" }
       $m = $ms[0]
 
-      $span = Get-ByteSpan -Text $text -CharStart $m.Index -CharEnd ($m.Index + $m.Length) -Enc $enc -Raw $raw -BomLen $bom.Length
-      $newBytes = New-ReplacedBytes -Raw $raw -span $span -ReplBytes $enc.GetBytes($repl)
+      $span = Assert-ByteSpan (Get-ByteSpan -Text $text -CharStart $m.Index -CharEnd ($m.Index + $m.Length) -Enc $enc -Raw $raw -BomLen $bom.Length)
+      $replBytes = $enc.GetBytes($repl)   # 严格编码：无法表示 ⇒ 抛 ⇒ 拒绝（见 reject-unencodable-replacement）
+      $newBytes = New-ReplacedBytes -Raw $raw -span $span -ReplBytes $replBytes
 
       # 期望文本
       $expectedText = $text.Substring(0, $m.Index) + $repl + $text.Substring($m.Index + $m.Length)
@@ -216,25 +231,82 @@ try {
     Add-Result $sc
   }
 
-  # ── 编码往返不自洽：拒绝（模拟"错配编码"）───────────────────
-  $sc = New-Scenario 'reject-encoding-mismatch'
+  # ── 编码拒绝（2026-10-18 审计 P1 补齐）─────────────────────
+  # 判据：无法被目标编码表示 / 原始字节与文本编码不一致 / 映射区间解码 != 匹配文本
+  #        ⇒ 明确拒绝，且拒绝时原字节不变（不生成任何新文件）。
+
+  # ① 替换文本无法被目标编码表示
+  $sc = New-Scenario 'reject-unencodable-replacement'
   Say ''
-  Say '── reject-encoding-mismatch · 字节不是该编码的合法序列 ⇒ 必须拒绝（不许静默替换成 ?）'
+  Say '── reject-unencodable-replacement · GB2312 表示不了 emoji ⇒ 必须拒绝（不许静默变 ?）'
   try {
-    $wrong = [System.Text.UTF8Encoding]::new($false)
-    # GBK 的「中」= D6 D0，用 UTF-8 严格解码应抛（D6 是非法起始字节）
-    $badBytes = [byte[]](0xD6, 0xD0)
-    $strict = [System.Text.UTF8Encoding]::new($false, $true)
-    $null = $strict.GetString($badBytes)
+    $enc = Get-Encoding 'gb2312'
+    $text = '中国X'
+    $raw = $enc.GetBytes($text)
+    $before = [byte[]]$raw.Clone()
+    $ms = @([regex]::Matches($text, '中国'))
+    $m = $ms[0]
+    $null = Assert-ByteSpan (Get-ByteSpan -Text $text -CharStart $m.Index -CharEnd ($m.Index + $m.Length) -Enc $enc -Raw $raw -BomLen 0)
+    $null = $enc.GetBytes('😀')   # 严格编码：GB2312 无法表示 ⇒ 应抛
+    $sc.status = 'FAIL'
+    Say '   观察：本应拒绝（GB2312 无法表示 emoji），却编码成功了'
+  } catch {
+    $sc.status = 'PASS'
+    $sc.observed.rejected = $true
+    $sc.observed.reason = $_.Exception.Message
+    $sc.observed.sourceBytesUnchanged = ((-join $raw) -eq (-join $before))
+    Say ('   观察：按预期拒绝 · ' + $_.Exception.GetType().Name + ' · 原字节未变=' + $sc.observed.sourceBytesUnchanged)
+  }
+  $sc.proves = @('替换文本无法被目标编码表示时，严格编码器拒绝（不静默替换成 ?）')
+  $sc.notProven = @()
+  Say ('   结果：' + $sc.status)
+  Add-Result $sc
+
+  # ② 原始字节与输入文本的编码不一致（严格解码在映射前拒绝）
+  $sc = New-Scenario 'reject-source-mismatch'
+  Say ''
+  Say '── reject-source-mismatch · GBK 字节按 UTF-8 严格解码 ⇒ 必须在映射前拒绝'
+  try {
+    $utf8 = Get-Encoding 'utf8'
+    $gbkBytes = [System.Text.Encoding]::GetEncoding('gb2312').GetBytes('中国')
+    $before = [byte[]]$gbkBytes.Clone()
+    $null = $utf8.GetString($gbkBytes)   # 严格 UTF-8 解码 GBK 字节 ⇒ 应抛
     $sc.status = 'FAIL'
     Say '   观察：本应拒绝，却解码成功了'
   } catch {
     $sc.status = 'PASS'
     $sc.observed.rejected = $true
     $sc.observed.reason = $_.Exception.Message
-    Say ('   观察：按预期拒绝 · ' + $_.Exception.GetType().Name)
+    Say ('   观察：按预期拒绝（映射前）· ' + $_.Exception.GetType().Name)
   }
-  $sc.proves = @('无效字节序列明确拒绝（严格解码）')
+  $sc.proves = @('原始字节与文本编码不一致时，严格解码在映射前拒绝')
+  $sc.notProven = @()
+  Say ('   结果：' + $sc.status)
+  Add-Result $sc
+
+  # ③ 映射区间解码 != 匹配文本（人为构造偏移，Assert-ByteSpan 必须拒绝）
+  $sc = New-Scenario 'reject-span-mismatch'
+  Say ''
+  Say '── reject-span-mismatch · 映射区间解码 != 匹配文本 ⇒ 必须拒绝（不许生成新文件）'
+  try {
+    $enc = Get-Encoding 'utf8'
+    $text = '中国X'
+    $raw = $enc.GetBytes($text)
+    $ms = @([regex]::Matches($text, '中国'))
+    $m = $ms[0]
+    $good = Get-ByteSpan -Text $text -CharStart $m.Index -CharEnd ($m.Index + $m.Length) -Enc $enc -Raw $raw -BomLen 0
+    # 人为把起始偏移 +1（模拟错误映射）
+    $bad = [pscustomobject]@{ StartByte = ($good.StartByte + 1); MatchLen = $good.MatchLen; Verified = $false; MatchText = $good.MatchText }
+    $null = Assert-ByteSpan $bad
+    $sc.status = 'FAIL'
+    Say '   观察：本应拒绝，却通过了'
+  } catch {
+    $sc.status = 'PASS'
+    $sc.observed.rejected = $true
+    $sc.observed.reason = $_.Exception.Message
+    Say ('   观察：按预期拒绝 · ' + $_.Exception.Message)
+  }
+  $sc.proves = @('映射区间解码 != 匹配文本时拒绝')
   $sc.notProven = @()
   Say ('   结果：' + $sc.status)
   Add-Result $sc
@@ -259,7 +331,8 @@ try {
   [System.IO.File]::WriteAllText($report, (ConvertTo-Json -InputObject $doc -Depth 8), [System.Text.UTF8Encoding]::new($false))
   Say ('报告：' + $report)
 
-  if (-not $WorkDir) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+  # 只清理**本次运行自己创建**的子目录（$work）；用户传入的 $base 绝不动。
+  if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
   exit 0
 } catch {
   Write-Host ('⚠️ 探针自己跑不起来（退出码 2）：' + $_.Exception.Message)

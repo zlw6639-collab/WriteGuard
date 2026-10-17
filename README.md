@@ -221,7 +221,8 @@ $r = Invoke-WgWrite -Path .\config.json -Commit -Tag 'bump' -Audit -MaxChangedLi
 > 不该让写操作失败。但正式入库可以要求"**没有审计就不算写成**"：传 `-StrictAudit` ⇒ 审计记录写不进去时，
 > **这次写入作废、按本次提交的备份还原**（状态 `AuditBlocked`，退出码 1）。
 > 回滚前照样核对"现在这份是不是我写的"，被第三方改过就 `RollbackRefused`。
-> ⚠️ 只在 `Invoke-WgWrite` 单文件路径上支持；`Invoke-WgBatch` 尚未接入（批量的审计失败语义要单独设计，不擅自替调用方决定）。
+> ✅ **批量路径已接入**（2026-10-17 补）：`Invoke-WgBatch` 把 `-StrictAudit` / `-Lock` 透传给每一项，
+> 语义沿用"**一项失败 ⇒ 整批回退**"。证据：自测 **㊿e1 / ㊿e2** · 元验证 **M23a / M23b**。
 
 ---
 
@@ -231,7 +232,7 @@ $r = Invoke-WgWrite -Path .\config.json -Commit -Tag 'bump' -Audit -MaxChangedLi
 
 ```
 pwsh -NoProfile -File .\tests\SelfTest.ps1
-pwsh -NoProfile -File .\tests\CliSmoke.ps1        # CLI 门面那层（4 条）
+pwsh -NoProfile -File .\tests\CliSmoke.ps1        # CLI 门面那层（5 条）
 ```
 
 覆盖：BOM / 换行判定 · 默认不开（不写、不备份、**不建目录**）· 备份与写前**逐字节一致** ·
@@ -257,7 +258,7 @@ pwsh -NoProfile -File .\tests\MutationCheck.ps1
 > 命中数不对报 `INJECT-MISS`；还原逐字节校验；默认只动副本。
 > 别人的检查器 / 脚本也能用它 —— 本机已用它把**老的一次性注入脚本全部迁完**：
 > **3 个套件 / 18 个场景**（`rulesig` 8 · `doc-inject` 2 · `boundaries` 8），统一入口 `E:\ai\_tools\fi-all.ps1`，
-> **实测 28/28 全过**，并带**真文件安全网**（跑前跑后 6 个真文件逐字节复核）。
+> **实测 30/30 全过**，并带**真文件安全网**（跑前跑后 6 个真文件逐字节复核）。
 
 | 注入 | 结果 |
 |---|---|

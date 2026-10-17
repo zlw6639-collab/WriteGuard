@@ -67,14 +67,20 @@ function Invoke-Probe([string]$id, [string]$what, [scriptblock]$body, [scriptblo
     if ($expect) { $ok = [bool](& $expect $sc) }
     $sc.status = if ($ok) { 'PASS' } else { 'FAIL' }
   } catch {
-    $sc.status = 'BLOCKED'
+    $ex = $_.Exception
+    # 2026-10-18 审计 P1：区分「已识别的环境阻塞」与「未预期的探针异常」——
+    #   权限/访问被拒 ⇒ BLOCKED（环境阻挡，不是原子写失败）；
+    #   其他 ⇒ FAIL（探针/逻辑错误，不能藏进 BLOCKED 里）。
+    $isEnv = ($ex -is [System.UnauthorizedAccessException]) -or ($ex.Message -match 'Access.*denied|访问被拒绝|拒绝访问')
+    $sc.status = if ($isEnv) { 'BLOCKED' } else { 'FAIL' }
     $sc.exception = [ordered]@{
-      type    = $_.Exception.GetType().FullName
-      hresult = $_.Exception.HResult
-      message = $_.Exception.Message
+      type     = $ex.GetType().FullName
+      hresult  = $ex.HResult
+      message  = $ex.Message
+      category = if ($isEnv) { 'env-permission' } else { 'unexpected' }
     }
-    Say ('   BLOCKED · ' + $_.Exception.GetType().Name + ' · ' + $_.Exception.Message)
-    Say '   （实验没完成：异常已记录，不归因 OS；换个有权限的环境再跑）'
+    if ($isEnv) { Say ('   BLOCKED · ' + $ex.GetType().Name + ' · ' + $ex.Message + '（环境阻挡，不是原子写失败）') }
+    else { Say ('   FAIL · 未预期异常 · ' + $ex.GetType().Name + ' · ' + $ex.Message) }
   }
   $sc.proves = @($proves)
   $sc.notProven = @($notProven)
@@ -83,8 +89,12 @@ function Invoke-Probe([string]$id, [string]$what, [scriptblock]$body, [scriptblo
 }
 
 try {
-  $work = if ($WorkDir) { $WorkDir } else { Join-Path ([System.IO.Path]::GetTempPath()) ('wg-atomic-probe-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
-  if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+  # ★ 目录安全（2026-10-18 审计 P0）：**绝不删除用户传入的 -WorkDir**。
+  #   只在它下面建一个本次运行专属的唯一子目录；清理也只删这个子目录。
+  #   默认（不传 -WorkDir）用系统临时目录 + GUID，不靠"先删同名目录"来避免碰撞。
+  $base = if ($WorkDir) { $WorkDir } else { [System.IO.Path]::GetTempPath() }
+  if (-not (Test-Path -LiteralPath $base)) { [void][System.IO.Directory]::CreateDirectory($base) }
+  $work = Join-Path $base ('wg-atomic-probe-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
   [void][System.IO.Directory]::CreateDirectory($work)
   $report = if ($ReportTo) { $ReportTo } else { Join-Path $PSScriptRoot 'AtomicWriteProbe-report.json' }
 
@@ -177,13 +187,14 @@ try {
   Invoke-Probe -id '4-interrupt-before-move' -what '模拟"写 tmp 后、Move 前进程被杀" ⇒ 目标必须原样（不半截）' `
     -body {
     param($sc)
+    $sc.observed.simulated = $true
     $sc.observed.targetContent = [System.IO.File]::ReadAllText($t4)
     $sc.observed.tmpLeftover   = (Test-Path -LiteralPath $tmp4)
-    Say ('   观察：目标=' + $sc.observed.targetContent + ' · tmp残留=' + $sc.observed.tmpLeftover +
-         '（这是**模拟**，不是真杀进程）')
+    Say ('   观察：目标=' + $sc.observed.targetContent + ' · tmp残留=' + $sc.observed.tmpLeftover)
+    Say '   ⚠️ **构造性模拟**：提前造好目标与 tmp 再读取——不是真中断写入流程；不能单独证明崩溃安全。'
   } -expect { param($sc) $sc.observed.targetContent -eq 'original' } `
-    -proves @('"Move 前中断"时目标文件原样、未写半截（模拟层面）') `
-    -notProven @('真实的进程被杀/断电未测：沙箱内杀不掉子进程、也没有断电手段 ⇒ 崩溃安全仍是 NOT_TESTED')
+    -proves @('构造性模拟：目标与 tmp 同时存在时，目标内容原样（演示，不是崩溃实验）') `
+    -notProven @('真实进程中断未测：沙箱内杀不掉子进程、也没有断电手段 ⇒ 崩溃安全仍是 NOT_TESTED')
 
   # ── ⑤ 并发可见性：读者进程持续读，写者反复替换 ─────────────
   $t5 = Join-Path $work 'concurrent-target.txt'
@@ -210,10 +221,13 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
     -body {
     param($sc)
     $proc = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $c5, '-Path', $t5, '-Out', $o5, '-Seconds', '2') -PassThru
+    $moveOk = 0; $moveFail = 0
     for ($i = 0; $i -lt $ConcurrentRounds; $i++) {
       $tmp5 = $t5 + '.tmp'
       [System.IO.File]::WriteAllText($tmp5, ([string]([char](65 + ($i % 2))) * 64))
-      [System.IO.File]::Move($tmp5, $t5, $true)
+      # 读者正打开目标时，写者 Move 可能被拒 —— 这是**观察数据**，不是实验失败。
+      try { [System.IO.File]::Move($tmp5, $t5, $true); $moveOk++ }
+      catch { $moveFail++; Remove-Item -LiteralPath $tmp5 -Force -ErrorAction SilentlyContinue }
       Start-Sleep -Milliseconds 2
     }
     if (-not $proc.WaitForExit(15000)) { try { $proc.Kill() } catch { } }
@@ -231,12 +245,15 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
     $sc.observed.distinctContents = $seen.Count
     $sc.observed.unexpectedFirstByte = $unexpected.Count
     $sc.observed.readErrors = $errs.Count
+    $sc.observed.moveAttempts = $ConcurrentRounds
+    $sc.observed.moveOk = $moveOk
+    $sc.observed.moveFailed = $moveFail
     Say ('   观察：读到不同内容=' + $seen.Count + ' 种 · 非 A/B 首字节=' + $unexpected.Count +
-         ' · 读异常=' + $errs.Count)
+         ' · 读异常=' + $errs.Count + ' · Move 成功=' + $moveOk + ' 被拒=' + $moveFail)
     if ($errs.Count -gt 0) { Say ('   读异常样例：' + (($errs | Select-Object -First 3) -join ' | ')) }
   } -expect { param($sc) $sc.observed.readErrors -eq 0 -and $sc.observed.unexpectedFirstByte -eq 0 -and $sc.observed.distinctContents -ge 1 } `
     -proves @('在并发读者视角，替换期间只观察到完整内容（旧或新），未观察到半截/空内容（本轮样本）') `
-    -notProven @('2 秒窗口的采样不覆盖所有时序；断电/进程被杀仍不在本轮证明范围内')
+    -notProven @('2 秒窗口的采样不覆盖所有时序；WINDOWS 下读者占用时 Move 可能被拒（moveFailed 是观察数据）')
 
   # ── ⑥ 只读属性：Move(overwrite) 是否被拒 ──────────────────
   $t6 = Join-Path $work 'readonly-target.txt'
@@ -245,13 +262,22 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
   Invoke-Probe -id '6-readonly-target' -what '目标带只读属性时，Move(overwrite) 的行为（成功或异常都要记录）' `
     -body {
     param($sc)
-    $tmp6 = $t6 + '.tmp'
-    [System.IO.File]::WriteAllText($tmp6, 'ro-new')
-    [System.IO.File]::Move($tmp6, $t6, $true)
-    $sc.observed.content = [System.IO.File]::ReadAllText($t6)
-    Say ('   观察：Move 成功 · 内容=' + $sc.observed.content + '（只读属性是否被保留需另测）')
-  } -expect { param($sc) $sc.observed.content -eq 'ro-new' } `
-    -proves @('记录了只读目标在 Move(overwrite) 下的实际行为') `
+    try {
+      $tmp6 = $t6 + '.tmp'
+      [System.IO.File]::WriteAllText($tmp6, 'ro-new')
+      [System.IO.File]::Move($tmp6, $t6, $true)
+      $sc.observed.outcome = 'moved'
+      $sc.observed.content = [System.IO.File]::ReadAllText($t6)
+      Say ('   观察：Move 成功 · 内容=' + $sc.observed.content + '（只读属性是否被保留需另测）')
+    } catch {
+      $sc.observed.outcome = 'rejected'
+      $sc.observed.reason = $_.Exception.Message
+      Say ('   观察：Move 被拒（只读目标）· ' + $_.Exception.Message)
+    }
+    # 收尾：无论成功被拒，都把只读属性清掉（不然本次运行清理不了这个文件）
+    try { [System.IO.File]::SetAttributes($t6, [System.IO.FileAttributes]::Normal) } catch { }
+  } -expect { param($sc) $sc.observed.outcome -in @('moved', 'rejected') } `
+    -proves @('记录了只读目标在 Move(overwrite) 下的实际行为（成功或被拒都算观察完成）') `
     -notProven @('属性/ACL 的完整保留不在本轮范围（rename 已知会重置属主，需对照实验）')
 
   # ── ⑦ 崩溃安全：明确 NOT_TESTED ───────────────────────────
@@ -286,7 +312,8 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
   [System.IO.File]::WriteAllText($report, (ConvertTo-Json -InputObject $doc -Depth 8), [System.Text.UTF8Encoding]::new($false))
   Say ('报告：' + $report)
 
-  if (-not $WorkDir) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+  # 只清理**本次运行自己创建**的子目录（$work）；用户传入的 $base 绝不动。
+  if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
   exit 0
 } catch {
   Write-Host ('⚠️ 探针自己跑不起来（退出码 2）：' + $_.Exception.Message)
