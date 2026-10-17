@@ -203,6 +203,12 @@ $scenarios = @(
      From = '(?m)(?<=^  \$prevEnc = \[Console\]::OutputEncoding\r?\n)  \[Console\]::OutputEncoding = \[System\.Text\.Encoding\]::UTF8$'
      To = '  $null = $null'
      Expect = 'CLI-5 非 UTF-8 控制台' }
+  # ★ 回滚失败（2026-10-18 审计建议：真实失败路径）：把 RollbackFailed 伪装成 RolledBack
+  #   ⇒ ⑧a（回滚本身失败）必须红。
+  @{ Id = 'M32'; What = '回滚失败：把 RollbackFailed 伪装成 RolledBack'
+     From = '(?m)^        \$res\.Status = ''RollbackFailed''; \$res\.Wrote = \$true$'
+     To = '        $res.Status = ''RolledBack''; $res.Wrote = $false'
+     Expect = '⑧a 复验失败且回滚本身失败' }
   # ★ 噪声场景（自证清单第 ② 条要求"不该报红的改动必须仍绿"）：只追加一行注释 ⇒ 自测必须**全绿**
   #   ⚠️ 注入点**不要选版本号**（0.1.5→0.1.6 时它当场 INJECT-MISS —— 已踩过一次）；
   #     选一条永远不会变的行：`Set-StrictMode` 只出现一次，加行尾空格对行为零影响。

@@ -443,6 +443,32 @@ $r = Invoke-WgWrite -Path $Target -Commit -Lock -Mutator $mut.GetNewClosure()
     Assert-Eq @($r.VerifyIssues).Count 1 '应带出复验问题清单'
   }
 
+  Case '⑧a 复验失败且回滚本身失败 ⇒ RollbackFailed（不装成功，备份交给调用方）' {
+    # 2026-10-18 审计建议（真实失败路径）：回滚**过程中再次发生异常**时，
+    # 状态必须是 RollbackFailed，而不是"看起来回滚了"。构造：复验时把目标设成只读，
+    # 让 Restore 的 WriteAllBytes 抛 Access denied。
+    $f = New-TestFile 'rbfail.txt' "AAA`n" $false
+    $before = Get-Bytes $f
+    $r = $null
+    try {
+      $r = Invoke-WgWrite -Path $f -Commit -Tag 'rbfail' `
+        -Mutator { param($s) $s.Text.Replace('AAA', 'ZZZ') } `
+        -Verify {
+        param($t, $p)
+        [System.IO.File]::SetAttributes($p, [System.IO.FileAttributes]::ReadOnly)   # 让回滚写不回去
+        @('故意报一个问题')
+      }
+    } finally {
+      try { [System.IO.File]::SetAttributes($f, [System.IO.FileAttributes]::Normal) } catch { }
+    }
+    Assert-Eq $r.Status 'RollbackFailed' '状态（回滚失败不许报 RolledBack）'
+    Assert-True ([bool]$r.Wrote) '应标记"写过"（没还原回来）'
+    Assert-True ([bool]$r.Backup) '必须把备份路径交给调用方（人工处置要用它）'
+    Assert-True (Test-Path -LiteralPath $r.Backup) '备份必须还在'
+    Assert-True (Same-Bytes $r.Backup $before) '备份必须是写前原始字节'
+    Assert-True ([string]$r.Note -match '请手工用备份还原') '说明里必须告诉调用方手工还原'
+  }
+
   Case '⑨ 「没算出来 ≠ 没问题」：复验脚本抛异常也一律回滚' {
     $f = New-TestFile 'verifythrow.txt' "AAA`n" $false
     $before = Get-Bytes $f

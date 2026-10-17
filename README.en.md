@@ -55,8 +55,8 @@ pwsh -NoProfile -File ./wg.ps1 audit   -File ./.writeguard/audit.jsonl
 ## Verify it yourself (don't trust me)
 
 ```powershell
-pwsh -NoProfile -File ./tests/SelfTest.ps1        # expect: PASS 57 / FAIL 0, exit 0
-pwsh -NoProfile -File ./tests/MutationCheck.ps1   # expect: OK 30 / 0,         exit 0
+pwsh -NoProfile -File ./tests/SelfTest.ps1        # expect: PASS 58 / FAIL 0, exit 0
+pwsh -NoProfile -File ./tests/MutationCheck.ps1   # expect: OK 31 / 0,         exit 0
 pwsh -NoProfile -File ./examples/minimal-checker/run-demo.ps1   # a 40-line checker + 3 injections
 pwsh -NoProfile -File ./Start-Here.ps1            # runs the above and lists what's left to do
 ```
