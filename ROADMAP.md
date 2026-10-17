@@ -351,7 +351,9 @@
   - ⚠️ 仍未验证：**Move 瞬间断电/被杀**（rename 原子性理论上保证，但沙箱内杀不掉子进程）。
   - **探针**：`tests/AtomicWriteProbe.ps1` —— 独立实验脚本（**不进五套件、不是发布门槛**），
     默认只在临时目录跑，逐场景记录"观察到什么 / 证明了什么 / 没证明什么"，并输出 JSON 报告
-    （`tests/AtomicWriteProbe-report.json`）。**异常只记录、不归因 OS**。
+    （`tests/AtomicWriteProbe-report.json`）。**四态：PASS / FAIL / BLOCKED / NOT_TESTED**——
+    权限拒绝记 BLOCKED（≠ 原子写失败），没跑记 NOT_TESTED（≠ 通过），**异常只记录、不归因 OS**。
+  - **补测条件**：**非受限 Windows 环境 + VM 快照/断电注入**（下次有可用环境时补，不为此装 WSL）。
   - **判据**：任何实现改动前先过这张表；README 只能写"已验证的部分"。这一条从"受阻"降为"路径已通、边界未证"。
 
 - [x] **编码 fuzz 矩阵**（P3 · 2026-10-17 完成，2026-10-18 按审计 P0 修订）：

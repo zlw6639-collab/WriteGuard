@@ -5,8 +5,14 @@
   ⚠️ 定位（先读这一行）：
     · **不是产品实现** —— 不改库、不进 `WriteGuard.psm1`、不走主路径；
     · **不是发布门槛** —— 不进 `Start-Here.ps1` 的五套件、不参与 DocCounts 数字；
-    · **只记录观察，不归因 OS** —— 遇到 Access denied 就记下异常类型/消息/环境，
-      由人判断是权限、沙箱、还是平台行为；脚本**不会**自动写"Windows 不支持"。
+    · **只记录观察，不归因 OS** —— 异常就记下类型/消息/环境，由人判断；
+      脚本**不会**自动写"Windows 不支持"。
+
+  四态（这四种**不能混用**）：
+    PASS       实验跑了，且观察符合预期
+    FAIL       实验跑了，但观察**不符合**预期（这是真的有问题）
+    BLOCKED    实验**没跑成**（环境阻挡：权限拒绝等）—— **权限拒绝 ≠ 原子写失败**
+    NOT_TESTED 实验**没有运行**（缺手段/环境）—— **没跑 ≠ 测试通过**
 
   为什么普通成功/失败测试不够：
     正常路径写成功 ⇒ 只证明"这次没报错"；**不能**证明崩溃时不留半截，
@@ -15,13 +21,13 @@
       · 并发可见性：读者进程持续读，写者反复替换 ⇒ 读者只应看到"完整旧"或"完整新"。
 
   输出的两样东西：
-    1. 屏幕：每个场景一行结果（`OK / EXCEPTION / NOT-PROVEN` + 观察摘要）；
-    2. 机器可读报告：JSON（默认 `tests/AtomicWriteProbe-report.json`，含环境、异常、proves/notProven）。
+    1. 屏幕：每个场景一行结果（四态 + 观察摘要）；
+    2. 机器可读报告：JSON（默认 `tests/AtomicWriteProbe-report.json`）。
 
   用法：
     pwsh -NoProfile -File .\tests\AtomicWriteProbe.ps1
     pwsh -NoProfile -File .\tests\AtomicWriteProbe.ps1 -WorkDir <你的目录> -ReportTo <报告.json>
-  退出码：0 = 探针跑完（异常场景也算跑完，**不是失败**）· 2 = 探针自己跑不起来
+  退出码：0 = 探针跑完（BLOCKED / NOT_TESTED 也算跑完，**不是失败**）· 2 = 探针自己跑不起来
 #>
 [CmdletBinding()]
 param(
@@ -49,27 +55,30 @@ function New-Scenario([string]$id, [string]$what) {
 }
 function Add-Result($sc) { [void]$script:results.Add($sc) }
 
-function Invoke-Probe([string]$id, [string]$what, [scriptblock]$body, [string[]]$proves, [string[]]$notProven) {
+# 跑一个场景。$expect 返回 $true/$false 决定 PASS/FAIL；
+# 抛异常 ⇒ BLOCKED（实验没完成，异常记录在案，不归因）。
+function Invoke-Probe([string]$id, [string]$what, [scriptblock]$body, [scriptblock]$expect, [string[]]$proves, [string[]]$notProven) {
   $sc = New-Scenario -id $id -what $what
   Say ''
   Say ('── ' + $id + ' · ' + $what)
   try {
     & $body $sc
-    if ($sc.status -eq 'not-run') { $sc.status = 'ok' }
+    $ok = $true
+    if ($expect) { $ok = [bool](& $expect $sc) }
+    $sc.status = if ($ok) { 'PASS' } else { 'FAIL' }
   } catch {
-    $sc.status = 'exception'
+    $sc.status = 'BLOCKED'
     $sc.exception = [ordered]@{
       type    = $_.Exception.GetType().FullName
       hresult = $_.Exception.HResult
       message = $_.Exception.Message
     }
-    Say ('   EXCEPTION · ' + $_.Exception.GetType().Name + ' · ' + $_.Exception.Message)
-    Say '   （只记录，不归因：可能是权限 / 沙箱 / 平台行为，留给后续实验判断）'
+    Say ('   BLOCKED · ' + $_.Exception.GetType().Name + ' · ' + $_.Exception.Message)
+    Say '   （实验没完成：异常已记录，不归因 OS；换个有权限的环境再跑）'
   }
   $sc.proves = @($proves)
   $sc.notProven = @($notProven)
-  $icon = switch ($sc.status) { 'ok' { 'OK' } 'exception' { 'EXCEPTION' } 'not-proven' { 'NOT-PROVEN' } default { $sc.status } }
-  Say ('   结果：' + $icon)
+  Say ('   结果：' + $sc.status)
   Add-Result $sc
 }
 
@@ -87,14 +96,15 @@ try {
     pwsh            = ('{0} {1}' -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
     workDir         = $work
     consoleCodePage = $codePage
-    note            = 'Access denied 只记录、不归因；判断权限/沙箱/平台行为需要对照实验'
+    note            = 'BLOCKED = 实验没完成（如权限拒绝），不是原子写失败；NOT_TESTED = 没跑，不是通过'
   }
 
   Say ('=' * 72)
   Say '  AtomicWriteProbe —— 原子写 / 崩溃安全 实验探针（不是产品实现，不是发布门槛）'
   Say ('=' * 72)
   Say ('  环境：{0} · {1} · {2}' -f $envInfo.os, $envInfo.osArch, $envInfo.pwsh)
-  Say '  ⚠️ 本探针只记录观察；普通成功/失败**不**构成崩溃安全或原子性的证明。'
+  Say '  ⚠️ 四态：PASS（跑了且符合预期）/ FAIL（跑了但不对）/ BLOCKED（没跑成）/ NOT_TESTED（没跑）'
+  Say '  ⚠️ 权限拒绝 ≠ 原子写失败；没跑 ≠ 通过。'
 
   # ── ① File.Replace ─────────────────────────────────────────
   $t1 = Join-Path $work 'replace-target.txt'
@@ -102,13 +112,15 @@ try {
   $b1 = Join-Path $work 'replace-bak.txt'
   [System.IO.File]::WriteAllText($t1, 'old')
   [System.IO.File]::WriteAllText($s1, 'new')
-  Invoke-Probe -id '1-file-replace' -what 'File.Replace(src, target, backup) 在当前环境是否可用' {
+  Invoke-Probe -id '1-file-replace' -what 'File.Replace(src, target, backup) 在当前环境是否可用' `
+    -body {
     param($sc)
     [System.IO.File]::Replace($s1, $t1, $b1)
     $sc.observed.content = [System.IO.File]::ReadAllText($t1)
     Say ('   观察：内容=' + $sc.observed.content)
-  } -proves @('记录了 File.Replace 在本环境的实际行为（成功或异常类型/消息）') `
-    -notProven @('即使成功，也不代表断电时原子（Replace 的崩溃语义未测）')
+  } -expect { param($sc) $sc.observed.content -eq 'new' } `
+    -proves @('记录了 File.Replace 在本环境的实际行为（成功或异常类型/消息）') `
+    -notProven @('即使 PASS，也不代表断电时原子（Replace 的崩溃语义未测）')
 
   # ── ② File.Move(overwrite) + 时间保留 ──────────────────────
   $t2 = Join-Path $work 'move-target.txt'
@@ -117,7 +129,8 @@ try {
   [System.IO.File]::SetCreationTime($t2, $oldTime)
   [System.IO.File]::SetLastWriteTime($t2, $oldTime)
   $before2 = Get-Item $t2
-  Invoke-Probe -id '2-file-move-overwrite' -what 'File.Move(src, target, $true) + 显式拷时间 ⇒ 内容/时间是否保留' {
+  Invoke-Probe -id '2-file-move-overwrite' -what 'File.Move(src, target, $true) + 显式拷时间 ⇒ 内容/时间是否保留' `
+    -body {
     param($sc)
     $tmp2 = $t2 + '.tmp'
     [System.IO.File]::WriteAllText($tmp2, 'new2')
@@ -131,7 +144,8 @@ try {
     $sc.observed.tmpLeftover  = (Test-Path -LiteralPath $tmp2)
     Say ('   观察：内容=' + $sc.observed.content + ' · mtime保留=' + $sc.observed.mtimeKept +
          ' · 创建时间保留=' + $sc.observed.createdKept + ' · tmp残留=' + $sc.observed.tmpLeftover)
-  } -proves @('在临时目录（同卷）里，内容/时间可保留、无 tmp 残留') `
+  } -expect { param($sc) $sc.observed.content -eq 'new2' -and $sc.observed.mtimeKept -and $sc.observed.createdKept -and -not $sc.observed.tmpLeftover } `
+    -proves @('在临时目录（同卷）里，内容/时间可保留、无 tmp 残留') `
     -notProven @('不能证明 Move 瞬间断电/被杀时目标一定完整（rename 原子性只是理论，未实测）')
 
   # ── ③ File.Move 无 overwrite（目标已存在）──────────────────
@@ -139,20 +153,20 @@ try {
   $s3 = Join-Path $work 'move-noov-src.txt'
   [System.IO.File]::WriteAllText($t3, 'keep')
   [System.IO.File]::WriteAllText($s3, 'replacement')
-  Invoke-Probe -id '3-file-move-nooverwrite' -what 'File.Move 不带 overwrite、目标已存在 ⇒ 预期拒绝（证明必须显式覆盖）' {
+  Invoke-Probe -id '3-file-move-nooverwrite' -what 'File.Move 不带 overwrite、目标已存在 ⇒ 预期拒绝（证明必须显式覆盖）' `
+    -body {
     param($sc)
     try {
       [System.IO.File]::Move($s3, $t3)
       $sc.observed.outcome = 'unexpected-success'
-      $sc.status = 'ok'
       Say '   观察：**没报错**（与预期不同，需人工复核）'
     } catch {
       $sc.observed.outcome = 'rejected-as-expected'
       $sc.observed.exceptionType = $_.Exception.GetType().FullName
       Say ('   观察：按预期拒绝 · ' + $_.Exception.GetType().Name)
-      $sc.status = 'ok'
     }
-  } -proves @('不带 overwrite 时不会静默覆盖（失败模式明确）') `
+  } -expect { param($sc) $sc.observed.outcome -eq 'rejected-as-expected' } `
+    -proves @('不带 overwrite 时不会静默覆盖（失败模式明确）') `
     -notProven @('拒绝本身不涉及崩溃安全')
 
   # ── ④ 中断模拟：Move 之前被杀 ──────────────────────────────
@@ -160,14 +174,16 @@ try {
   [System.IO.File]::WriteAllText($t4, 'original')
   $tmp4 = $t4 + '.tmp'
   [System.IO.File]::WriteAllText($tmp4, 'half-written')
-  Invoke-Probe -id '4-interrupt-before-move' -what '模拟"写 tmp 后、Move 前进程被杀" ⇒ 目标必须原样（不半截）' {
+  Invoke-Probe -id '4-interrupt-before-move' -what '模拟"写 tmp 后、Move 前进程被杀" ⇒ 目标必须原样（不半截）' `
+    -body {
     param($sc)
     $sc.observed.targetContent = [System.IO.File]::ReadAllText($t4)
     $sc.observed.tmpLeftover   = (Test-Path -LiteralPath $tmp4)
     Say ('   观察：目标=' + $sc.observed.targetContent + ' · tmp残留=' + $sc.observed.tmpLeftover +
          '（这是**模拟**，不是真杀进程）')
-  } -proves @('"Move 前中断"时目标文件原样、未写半截（模拟层面）') `
-    -notProven @('真实的进程被杀/断电未测：沙箱内杀不掉子进程、也没有断电手段')
+  } -expect { param($sc) $sc.observed.targetContent -eq 'original' } `
+    -proves @('"Move 前中断"时目标文件原样、未写半截（模拟层面）') `
+    -notProven @('真实的进程被杀/断电未测：沙箱内杀不掉子进程、也没有断电手段 ⇒ 崩溃安全仍是 NOT_TESTED')
 
   # ── ⑤ 并发可见性：读者进程持续读，写者反复替换 ─────────────
   $t5 = Join-Path $work 'concurrent-target.txt'
@@ -190,7 +206,8 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
 [System.IO.File]::WriteAllLines($Out, $all, [System.Text.UTF8Encoding]::new($false))
 '@
   [System.IO.File]::WriteAllText($c5, $childSrc, [System.Text.UTF8Encoding]::new($false))
-  Invoke-Probe -id '5-concurrent-reader' -what '读者持续读 + 写者反复 Move 替换 ⇒ 读者只看到完整旧/新，不看到半截' {
+  Invoke-Probe -id '5-concurrent-reader' -what '读者持续读 + 写者反复 Move 替换 ⇒ 读者只看到完整旧/新，不看到半截' `
+    -body {
     param($sc)
     $proc = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $c5, '-Path', $t5, '-Out', $o5, '-Seconds', '2') -PassThru
     for ($i = 0; $i -lt $ConcurrentRounds; $i++) {
@@ -217,50 +234,54 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
     Say ('   观察：读到不同内容=' + $seen.Count + ' 种 · 非 A/B 首字节=' + $unexpected.Count +
          ' · 读异常=' + $errs.Count)
     if ($errs.Count -gt 0) { Say ('   读异常样例：' + (($errs | Select-Object -First 3) -join ' | ')) }
-  } -proves @('在并发读者视角，替换期间只观察到完整内容（旧或新），未观察到半截/空内容（本轮样本）') `
+  } -expect { param($sc) $sc.observed.readErrors -eq 0 -and $sc.observed.unexpectedFirstByte -eq 0 -and $sc.observed.distinctContents -ge 1 } `
+    -proves @('在并发读者视角，替换期间只观察到完整内容（旧或新），未观察到半截/空内容（本轮样本）') `
     -notProven @('2 秒窗口的采样不覆盖所有时序；断电/进程被杀仍不在本轮证明范围内')
 
   # ── ⑥ 只读属性：Move(overwrite) 是否被拒 ──────────────────
   $t6 = Join-Path $work 'readonly-target.txt'
   [System.IO.File]::WriteAllText($t6, 'ro-old')
   [System.IO.File]::SetAttributes($t6, [System.IO.FileAttributes]::ReadOnly)
-  Invoke-Probe -id '6-readonly-target' -what '目标带只读属性时，Move(overwrite) 的行为（成功或异常都要记录）' {
+  Invoke-Probe -id '6-readonly-target' -what '目标带只读属性时，Move(overwrite) 的行为（成功或异常都要记录）' `
+    -body {
     param($sc)
     $tmp6 = $t6 + '.tmp'
     [System.IO.File]::WriteAllText($tmp6, 'ro-new')
     [System.IO.File]::Move($tmp6, $t6, $true)
     $sc.observed.content = [System.IO.File]::ReadAllText($t6)
     Say ('   观察：Move 成功 · 内容=' + $sc.observed.content + '（只读属性是否被保留需另测）')
-  } -proves @('记录了只读目标在 Move(overwrite) 下的实际行为') `
+  } -expect { param($sc) $sc.observed.content -eq 'ro-new' } `
+    -proves @('记录了只读目标在 Move(overwrite) 下的实际行为') `
     -notProven @('属性/ACL 的完整保留不在本轮范围（rename 已知会重置属主，需对照实验）')
 
-  # ── ⑦ 崩溃安全：明确标"未证明" ────────────────────────────
+  # ── ⑦ 崩溃安全：明确 NOT_TESTED ───────────────────────────
   $sc7 = New-Scenario -id '7-crash-safety' -what 'Move 瞬间断电/进程被杀 ⇒ 目标是否完整（**唯一真正的崩溃安全命题**）'
-  $sc7.status = 'not-proven'
+  $sc7.status = 'NOT_TESTED'
   $sc7.observed.reason = '沙箱内杀不掉子进程、也没有断电手段；普通成功/失败测试不构成证明'
   $sc7.proves = @()
-  $sc7.notProven = @('这是唯一的崩溃安全命题，本轮**没有**证明；需要 VM 快照/断电注入或真机断电实验')
+  $sc7.notProven = @('这是唯一的崩溃安全命题，本轮**没有运行**（NOT_TESTED，不是通过）')
   Say ''
   Say '── 7-crash-safety · Move 瞬间断电/被杀'
-  Say '   NOT-PROVEN · 本轮**没有**证明（普通测试不构成证明；需要 VM/断电注入）'
+  Say '   NOT_TESTED · 本轮**没有运行**（缺手段：沙箱杀不掉子进程 / 无断电注入）'
   Add-Result $sc7
 
   # ── 汇总 ───────────────────────────────────────────────────
   Say ''
   Say ('─' * 72)
-  $ok = @($script:results | Where-Object { $_.status -eq 'ok' }).Count
-  $ex = @($script:results | Where-Object { $_.status -eq 'exception' }).Count
-  $np = @($script:results | Where-Object { $_.status -eq 'not-proven' }).Count
-  Say ("汇总：OK {0} · EXCEPTION {1} · NOT-PROVEN {2}（异常不是失败：只记录环境行为）" -f $ok, $ex, $np)
-  Say '⚠️ 这一轮**只**给出"在什么环境下观察到什么"；崩溃安全（Move 瞬间断电）仍未证明。'
+  $pass = @($script:results | Where-Object { $_.status -eq 'PASS' }).Count
+  $fail = @($script:results | Where-Object { $_.status -eq 'FAIL' }).Count
+  $blk  = @($script:results | Where-Object { $_.status -eq 'BLOCKED' }).Count
+  $nt   = @($script:results | Where-Object { $_.status -eq 'NOT_TESTED' }).Count
+  Say ("汇总：PASS {0} · FAIL {1} · BLOCKED {2} · NOT_TESTED {3}" -f $pass, $fail, $blk, $nt)
+  Say '⚠️ BLOCKED = 实验没完成（如权限拒绝），不是原子写失败；NOT_TESTED = 没跑，不是通过。'
 
   $doc = [ordered]@{
     schema      = 1
     generatedAt = (Get-Date).ToString('o')
     environment = $envInfo
-    scope       = '原子写/崩溃安全的实验探针；不证明崩溃安全，不归因 OS'
+    scope       = '原子写/崩溃安全的实验探针；四态：PASS/FAIL/BLOCKED/NOT_TESTED；不归因 OS'
     scenarios   = @($script:results | ForEach-Object { [pscustomobject]$_ })
-    summary     = [ordered]@{ ok = $ok; exception = $ex; notProven = $np }
+    summary     = [ordered]@{ pass = $pass; fail = $fail; blocked = $blk; notTested = $nt }
   }
   [System.IO.File]::WriteAllText($report, (ConvertTo-Json -InputObject $doc -Depth 8), [System.Text.UTF8Encoding]::new($false))
   Say ('报告：' + $report)
