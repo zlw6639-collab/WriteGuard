@@ -13,11 +13,13 @@
   退出码：0 = 安全 · 1 = 有探针动了用户目录 · 2 = 测试自己跑不起来
 #>
 [CmdletBinding()]
-param()
+param([string]$ProbeDir)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+# 探针目录可指定（用于"注入坏探针"的自证：证明本测试确实能抓住"删用户目录"）
+$probeDir = if ($ProbeDir) { $ProbeDir } else { Join-Path $root 'tests' }
 
 $script:pass = 0; $script:fail = 0
 function Say([string]$s = '') { Write-Host $s }
@@ -42,8 +44,8 @@ try {
   Say ('  测试目录：' + $runDir)
   Say ''
 
-  $probe1 = Join-Path $root 'tests\AtomicWriteProbe.ps1'
-  $probe2 = Join-Path $root 'tests\ByteSpanProbe.ps1'
+  $probe1 = Join-Path $probeDir 'AtomicWriteProbe.ps1'
+  $probe2 = Join-Path $probeDir 'ByteSpanProbe.ps1'
   $rep1 = Join-Path $runDir 'atomic-report.json'
   $rep2 = Join-Path $runDir 'bytespan-report.json'
 

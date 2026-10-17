@@ -8,7 +8,7 @@
   退出码：0 = 全绿 · 1 = 有测试没过 · 2 = 跑不起来（先修尺子）
 #>
 [CmdletBinding()]
-param([switch]$SkipTests)
+param([switch]$SkipTests, [switch]$WithProbes)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -53,6 +53,25 @@ try {
     & pwsh -NoProfile -File (Join-Path $root 'tests\BackupRetention.ps1')
     if ($LASTEXITCODE -ne 0) { $fail = 1 }
     Line ''
+    # ★ 实验探针（2026-10-18 补）：**默认不跑**（它们不是发布门槛），
+    #   `-WithProbes` 才跑；**无论结果如何都不改变本入口的退出码** ——
+    #   探针是实验资产，不是发布门槛（否则等于把"实验"变成"硬性门"）。
+    if ($WithProbes) {
+      Line '── 附加：实验探针（不进五套件，**不是发布门槛**：只报告，不影响退出码）──'
+      $probeFail = 0
+      & pwsh -NoProfile -File (Join-Path $root 'tests\ByteSpanProbe.ps1')
+      if ($LASTEXITCODE -ne 0) { $probeFail++ }
+      & pwsh -NoProfile -File (Join-Path $root 'tests\AtomicWriteProbe.ps1')
+      if ($LASTEXITCODE -ne 0) { $probeFail++ }
+      & pwsh -NoProfile -File (Join-Path $root 'tests\ProbeSafetyCheck.ps1')
+      if ($LASTEXITCODE -ne 0) { $probeFail++ }
+      if ($probeFail -gt 0) {
+        Line ('  ⚠️ 探针有 ' + $probeFail + ' 项 FAIL —— 已报告，但**不影响本入口退出码**（探针不是门槛）。')
+      } else {
+        Line '  ✅ 探针全部按预期（PASS/BLOCKED/NOT_TESTED 均见各自报告）。'
+      }
+      Line ''
+    }
   }
 
   Line '── 还剩什么没做（读自 ROADMAP.md：只有一份清单，不会漂）──'
