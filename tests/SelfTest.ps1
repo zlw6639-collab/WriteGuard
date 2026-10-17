@@ -65,6 +65,24 @@ function New-TestFile([string]$name, [string]$content, [bool]$bom = $false) {
   return $p
 }
 function Get-Bytes([string]$p) { return [System.IO.File]::ReadAllBytes($p) }
+# 只读构造的跨平台版（2026-10-18 CI 发现）：.NET 在 Unix 上 ReadOnly 语义与 Windows 不同，
+# 统一用 chmod 444（非 root 写会被拒）与 Windows 的只读属性对齐。
+function Set-TestReadOnly([string]$p) {
+  if ($IsWindows) { (Get-Item -LiteralPath $p).IsReadOnly = $true }
+  else {
+    if ([System.IO.File].GetMethod('SetUnixFileMode')) {
+      [System.IO.File]::SetUnixFileMode($p, [System.IO.UnixFileMode]'UserRead, GroupRead, OtherRead')
+    } else { & chmod 444 -- $p }
+  }
+}
+function Clear-TestReadOnly([string]$p) {
+  if ($IsWindows) { (Get-Item -LiteralPath $p).IsReadOnly = $false }
+  else {
+    if ([System.IO.File].GetMethod('SetUnixFileMode')) {
+      [System.IO.File]::SetUnixFileMode($p, [System.IO.UnixFileMode]'UserRead, UserWrite, GroupRead, OtherRead')
+    } else { & chmod 644 -- $p }
+  }
+}
 function BaksOf([string]$file) {
   $dir = Join-Path $script:tmp '.writeguard'
   if (-not (Test-Path -LiteralPath $dir)) { return @() }
@@ -458,11 +476,11 @@ $r = Invoke-WgWrite -Path $Target -Commit -Lock -Mutator $mut.GetNewClosure()
         -Mutator { param($s) $s.Text.Replace('AAA', 'ZZZ') } `
         -Verify {
         param($t, $p)
-        [System.IO.File]::SetAttributes($p, [System.IO.FileAttributes]::ReadOnly)   # 让回滚写不回去
+        Set-TestReadOnly $p   # 让回滚写不回去（跨平台）
         @('故意报一个问题')
       }
     } finally {
-      try { [System.IO.File]::SetAttributes($f, [System.IO.FileAttributes]::Normal) } catch { }
+      try { Clear-TestReadOnly $f } catch { }
     }
     Assert-Eq $r.Status 'RollbackFailed' '状态（回滚失败不许报 RolledBack）'
     Assert-True ([bool]$r.Wrote) '应标记"写过"（没还原回来）'
@@ -728,12 +746,12 @@ $r = Invoke-WgWrite -Path $Target -Commit -Lock -Mutator $mut.GetNewClosure()
   Case '㉚ 写入失败（目标只读）⇒ 报错且文件内容不变' {
     $f = New-TestFile 'readonly.txt' "AAA`n" $false
     $b0 = Get-Bytes $f
-    (Get-Item -LiteralPath $f).IsReadOnly = $true
+    Set-TestReadOnly $f
     try {
       $r = Invoke-WgWrite -Path $f -Commit -Tag 'ro' -Mutator { param($s) $s.Text.Replace('AAA', 'ZZZ') }
       Assert-True ($r.Status -in @('Error', 'RolledBack')) "写入失败应报 Error / RolledBack（实际 $($r.Status)）"
       Assert-True (Same-Bytes $f $b0) '文件内容必须不变'
-    } finally { (Get-Item -LiteralPath $f).IsReadOnly = $false }
+    } finally { Clear-TestReadOnly $f }
   }
 
   Case '㉛ 编码严格：含无效 UTF-8 字节 ⇒ 读快照必须抛（不许静默变 � 再写回去）' {
