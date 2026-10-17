@@ -9,8 +9,10 @@ name: ci
 #   · 每一步的"绿灯含义"写清楚。
 
 on:
+  # 2026-10-18 发布后修补：本仓库默认分支是 master（不是 main），
+  # 所以 push 触发补上 master；同时这次提交用于让 GitHub 重新索引本 workflow。
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 
