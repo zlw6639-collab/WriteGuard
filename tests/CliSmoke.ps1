@@ -128,7 +128,8 @@ try {
     [System.IO.File]::WriteAllText($j5, $jsonText5, [System.Text.UTF8Encoding]::new($false))
     $prev = [Console]::OutputEncoding
     try {
-      [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936)
+      # 敌意编码 = 系统 ANSI（中文 Windows=936、英文 Windows=1252）；避免依赖 codepage 936 是否注册
+      [Console]::OutputEncoding = [System.Text.Encoding]::Default
       $r = Invoke-Cli @('json', '-File', $j5, '-Field', 'version', '-Value', '2.0.0')
       Assert-Eq $r.Code 0 '退出码'
       Assert-True ($r.Out -match '状态：DryRun') '中文输出必须可读（不许变成 ?）'
