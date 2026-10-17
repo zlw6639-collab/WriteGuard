@@ -70,17 +70,16 @@ function Get-Bytes([string]$p) { return [System.IO.File]::ReadAllBytes($p) }
 function Set-TestReadOnly([string]$p) {
   if ($IsWindows) { (Get-Item -LiteralPath $p).IsReadOnly = $true }
   else {
-    if ([System.IO.File].GetMethod('SetUnixFileMode')) {
-      [System.IO.File]::SetUnixFileMode($p, [System.IO.UnixFileMode]'UserRead, GroupRead, OtherRead')
-    } else { & chmod 444 -- $p }
+    # ⚠️ 不用 GetMethod 探测（有重载 ⇒ 歧义匹配会抛）：直接试，失败退回 chmod
+    try { [System.IO.File]::SetUnixFileMode($p, [System.IO.UnixFileMode]'UserRead, GroupRead, OtherRead') }
+    catch { & chmod 444 -- $p }
   }
 }
 function Clear-TestReadOnly([string]$p) {
   if ($IsWindows) { (Get-Item -LiteralPath $p).IsReadOnly = $false }
   else {
-    if ([System.IO.File].GetMethod('SetUnixFileMode')) {
-      [System.IO.File]::SetUnixFileMode($p, [System.IO.UnixFileMode]'UserRead, UserWrite, GroupRead, OtherRead')
-    } else { & chmod 644 -- $p }
+    try { [System.IO.File]::SetUnixFileMode($p, [System.IO.UnixFileMode]'UserRead, UserWrite, GroupRead, OtherRead') }
+    catch { & chmod 644 -- $p }
   }
 }
 function BaksOf([string]$file) {
