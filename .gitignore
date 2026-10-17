@@ -1,0 +1,7 @@
+# 测试运行产物（随每次运行变化）
+tests/*-latest.txt
+# 本地备份（作者机器上的 .bak，不参与版本）
+.writeguard/
+_backup/
+# 打包产物
+*.zip

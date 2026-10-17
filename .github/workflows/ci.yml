@@ -1,0 +1,93 @@
+name: ci
+
+# WriteGuard —— 把"注入 → 断言 → 还原"和自测的反向验证当门。
+# ⚠️ 注释与 step 名里**不写条数** —— 写过一次（31 条 / 7 injections / 9 个注入场景 / 34 条），
+#    套件一升就集体漂了（2026-10-17 外部审计抓到）。确切数字看各套件自己的"结果："行。
+# 设计原则（抄同作者 sleepmetrics 的教训）：
+#   · **不依赖任何真实数据的闸门必须真跑** —— 会 skip 的绿灯是假绿灯；
+#   · 语法门先行 —— 语法不过，后面全是假的；
+#   · 每一步的"绿灯含义"写清楚。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pwsh on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 语法不过 ⇒ 后面全是假的
+      - name: Syntax gate
+        shell: pwsh
+        run: |
+          $bad = $false
+          $files = @(
+            'WriteGuard.psm1', 'WriteGuard.psd1', 'wg.ps1', 'Start-Here.ps1',
+            'tests/SelfTest.ps1', 'tests/MutationCheck.ps1', 'tests/FaultInject.ps1',
+            'examples/fix-handoff-pointer.ps1',
+            'examples/minimal-checker/check.ps1',
+            'examples/minimal-checker/scenarios.ps1',
+            'examples/minimal-checker/run-demo.ps1'
+          )
+          foreach ($f in $files) {
+            $tok = $null; $err = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$tok, [ref]$err)
+            if ($err -and $err.Count -gt 0) {
+              $bad = $true
+              Write-Host "SYNTAX FAIL: $f"
+              $err | ForEach-Object { Write-Host ("  " + $_.Message + " (行 " + $_.Extent.StartLineNumber + ")") }
+            } else { Write-Host "SYNTAX OK: $f" }
+          }
+          if ($bad) { exit 1 }
+
+      # ★ 反向验证：默认不开 / 备份逐字节 / 唯一性 / 读回复验 / 回滚 / 审计 / 多文件事务 / 幂等
+      #   —— 全部用临时目录 + 人造文件，**不依赖任何真实数据**，所以 CI 上一定真跑
+      - name: Self-test (adversarial cases)
+        shell: pwsh
+        run: ./tests/SelfTest.ps1
+
+      # ★ 元验证：把库按某条规矩**故意改坏** ⇒ 自测必须报红（每个注入场景都要被抓住）
+      #   这一步是"灵魂"：没有它，上面那步全绿也可能只是装饰
+      - name: Mutation check (injections must all be caught)
+        shell: pwsh
+        run: ./tests/MutationCheck.ps1
+
+      # 通用注入骨架的自证：一个 40 行的最小检查器 + 3 个场景（含噪声边界）
+      - name: Minimal demo (checker + injections)
+        shell: pwsh
+        run: ./examples/minimal-checker/run-demo.ps1
+
+      # CLI 门面那层单独的证据（与库的自测分开测：一层是"规矩"，一层是"门面"）
+      - name: CLI smoke (4 cases)
+        shell: pwsh
+        run: ./tests/CliSmoke.ps1
+
+      # ★ 文档数字一致性：文档里的现状数字必须等于上面各套件自己的「结果：」行
+      #   放在最后 —— 它读的是本次刚生成的 *-latest.txt，顺序反过来就是在验旧数字
+      - name: Doc counts (docs must match reports)
+        shell: pwsh
+        run: ./tests/DocCounts.ps1
+
+      # 差异算法账本：硬判据只有两条 —— 不漏报、5000 行不变慢（误报率只统计不设阈值）
+      - name: Diff quality (report vs real changed lines)
+        shell: pwsh
+        run: ./tests/DiffQuality.ps1
+
+      # 备份保留策略：默认演练不删；每组至少留 1 份（唯一可恢复版本不能被清掉）
+      - name: Backup retention (never delete the only recoverable copy)
+        shell: pwsh
+        run: ./tests/BackupRetention.ps1
+
+      # 接手入口：跑清单解析（确认 ROADMAP 能被机器读出来）—— 跳过测试是为了不重复跑上面两步
+      - name: Entry point (list open items)
+        shell: pwsh
+        run: ./Start-Here.ps1 -SkipTests
