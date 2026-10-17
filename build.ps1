@@ -44,7 +44,8 @@ try {
   $psd1Text = [System.IO.File]::ReadAllText($psd1Path)
   $md = [regex]::Match($psd1Text, "ModuleVersion\s*=\s*'([^']+)'")
   $readmeText = [System.IO.File]::ReadAllText($readmePath)
-  $rm = [regex]::Match($readmeText, 'v(\d+\.\d+\.\d+)（')
+  # 兼容「v0.1.6（…）」与「v0.1.6 候选（…）」两种写法
+  $rm = [regex]::Match($readmeText, 'v(\d+\.\d+\.\d+)')
 
   Write-Host ('版本：psm1={0} · psd1={1} · README={2}' -f $version, $md.Groups[1].Value, $rm.Groups[1].Value)
   if (-not $SkipVerify) {
