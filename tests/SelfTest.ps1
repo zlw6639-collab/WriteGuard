@@ -447,6 +447,9 @@ $r = Invoke-WgWrite -Path $Target -Commit -Lock -Mutator $mut.GetNewClosure()
     # 2026-10-18 审计建议（真实失败路径）：回滚**过程中再次发生异常**时，
     # 状态必须是 RollbackFailed，而不是"看起来回滚了"。构造：复验时把目标设成只读，
     # 让 Restore 的 WriteAllBytes 抛 Access denied。
+    # ⚠️ 不能只看最终状态：还要证明 ① 复验确实被调用且失败原因被记录；
+    #    ② 失败来自"回滚失败"这一支（Note 含固定文案）；③ 目标停在写后中间态（证明没回滚成功）；
+    #    ④ 备份完整可读；⑤ 测试后只读属性已清（不污染后续用例）。
     $f = New-TestFile 'rbfail.txt' "AAA`n" $false
     $before = Get-Bytes $f
     $r = $null
@@ -463,10 +466,19 @@ $r = Invoke-WgWrite -Path $Target -Commit -Lock -Mutator $mut.GetNewClosure()
     }
     Assert-Eq $r.Status 'RollbackFailed' '状态（回滚失败不许报 RolledBack）'
     Assert-True ([bool]$r.Wrote) '应标记"写过"（没还原回来）'
+    # ① 复验确实被调用（失败原因被记录）
+    Assert-True ((@($r.VerifyIssues) -join ' ').Contains('故意报一个问题')) '复验必须被调用且失败原因被记录'
+    # ② 失败来自"回滚失败"这一支，而不是别的路径意外抛错
+    Assert-True ([string]$r.Note -match '回滚失败') '说明必须写明"回滚失败"'
+    Assert-True ([string]$r.Note -match '请手工用备份还原') '说明必须告诉调用方手工还原'
+    # ③ 目标停在写后中间态 ⇒ 证明回滚确实没成功（不是"看起来失败但实际恢复了"）
+    Assert-Eq ([System.IO.File]::ReadAllText($f)) "ZZZ`n" '目标必须是写后中间态（证明确实没回滚成功）'
+    # ④ 备份存在、可读、且等于写前原始字节
     Assert-True ([bool]$r.Backup) '必须把备份路径交给调用方（人工处置要用它）'
     Assert-True (Test-Path -LiteralPath $r.Backup) '备份必须还在'
     Assert-True (Same-Bytes $r.Backup $before) '备份必须是写前原始字节'
-    Assert-True ([string]$r.Note -match '请手工用备份还原') '说明里必须告诉调用方手工还原'
+    # ⑤ 只读属性已清（否则会污染后续清理与用例）
+    Assert-True (-not ((([System.IO.File]::GetAttributes($f)) -band [System.IO.FileAttributes]::ReadOnly) -eq [System.IO.FileAttributes]::ReadOnly)) '测试后只读属性必须已清除'
   }
 
   Case '⑨ 「没算出来 ≠ 没问题」：复验脚本抛异常也一律回滚' {
