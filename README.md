@@ -474,15 +474,22 @@ WriteGuard\
 ├─ WriteGuard.psd1                    # 模块清单
 ├─ wg.ps1                             # 命令行门面（不改代码就能用）
 ├─ Prune-Backups.ps1                  # 备份保留策略（默认演练；每个目标至少留 1 份）
-├─ Start-Here.ps1                     # 接手入口：跑测试 + 列未完成项
+├─ Start-Here.ps1                     # 接手入口：跑测试 + 列未完成项（-WithProbes 可选跑探针，不影响退出码）
+├─ build.ps1                          # 发布打包：版本校验 → 清单 → 审查包 → 双 zip → 复算核对
 ├─ 双击运行_WriteGuard检查.bat         # 同上（双击即可；CRLF + chcp 65001）
 ├─ README.md                          # 本文（中文，完整）
 ├─ README.en.md                       # English brief（卖点 / 快速开始 / 指回中文详细文档）
 ├─ LICENSE                            # MIT（与同作者的 sleepmetrics 一致）
 ├─ 检查器自证清单.md                   # ★ 灵魂的说明书：12 条「判据 / 做法 / 反例」
-├─ .github\workflows\ci.yml           # CI：语法门 → 自测 → 元验证 → 最小示例 → 文档数字 → 差异账本 → 备份保留
-├─ ROADMAP.md                         # 认领清单（A→G，每条带判据）
+├─ .github\workflows\ci.yml           # CI：语法 → 自测 → 元验证 → CLI → 文档数字 → 探针 → 差异 → 备份 → 入口
+├─ ROADMAP.md                         # 认领清单（每条带判据）
 ├─ 接手说明.md                         # 给下一个来的人 / AI 会话
+├─ docs\                              # 设计文档（不是库的一部分，但解释「为什么这样设计」）
+│  ├─ 04-原子写设计审查.md             # mtime / 备份 / 锁 / 失败恢复四项评估（结论：暂缓进主路径）
+│  ├─ 05-元验证产品化接口设计.md       # 0.2.0 设计稿（六要素），不写实现
+│  ├─ 06-结构化运行报告-schema.md      # JSON 报告 schema + 敏感信息边界
+│  ├─ 07-方法论-假绿与元验证.md        # 假绿 I/II 类 · 证据四态 · 覆盖率不是指标
+│  └─ 08-平台假设清单.md               # 12 项平台假设 × 三态（Windows 实测 / Unix 未验证）
 ├─ tests\
 │  ├─ SelfTest.ps1                    # 自测（零依赖，退出码 0/1/2；条数只认报告「结果：」行）
 │  ├─ SelfTest-latest.txt             # 最近一次自测报告（留痕，也是文档数字的唯一事实源）
@@ -492,6 +499,9 @@ WriteGuard\
 │  ├─ DiffQuality.ps1                 # 差异算法账本：报告改动面 vs 真实改动行数
 │  ├─ BackupRetention.ps1             # 备份保留策略的反向验证（三条不变量）
 │  ├─ CliSmoke.ps1                    # CLI 门面那层的冒烟（与库的规矩分开算）
+│  ├─ AtomicWriteProbe.ps1            # 实验探针：原子写（四态 PASS/FAIL/BLOCKED/NOT_TESTED；不是发布门槛）
+│  ├─ ByteSpanProbe.ps1               # 实验探针：字节级 span 原型（19 场景；映射错误注入必红）
+│  ├─ ProbeSafetyCheck.ps1            # 探针安全：不得删除用户 -WorkDir（哨兵回归）
 │  └─ FaultInject.ps1                 # 【通用骨架】注入 → 断言 → 还原（目标/场景/断言全走参数）
 └─ examples\
    ├─ fix-handoff-pointer.ps1         # 真实场景样板（回写指针行，默认演练）
