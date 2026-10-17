@@ -39,6 +39,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:results = New-Object System.Collections.Generic.List[object]
 function Say([string]$s = '') { Write-Host $s }
+function Assert-True($cond, [string]$msg) { if (-not $cond) { throw $msg } }
 
 function New-Scenario([string]$id) {
   return [ordered]@{
@@ -311,6 +312,42 @@ try {
   Say ('   结果：' + $sc.status)
   Add-Result $sc
 
+  # ④ 映射越界：字节数组比文本应有的长度短（2026-10-18 审计注入C 的缺口）
+  #   判据：拒绝，且**原因必须是"映射越界"**（不能是下游 Array.Copy 抛的任意异常）。
+  $sc = New-Scenario 'reject-span-overflow'
+  Say ''
+  Say '── reject-span-overflow · 字节数组比文本短（映射越界）⇒ 必须拒绝，且原因是映射越界'
+  try {
+    $enc = Get-Encoding 'utf8'
+    $text = '中国X'
+    $raw = [byte[]]$enc.GetBytes($text)
+    $short = [byte[]]$raw[0..3]        # 只有 4 字节，比 '中国' 的 6 字节还短
+    $ms = @([regex]::Matches($text, '中国'))
+    $m = $ms[0]
+    $rejected = $false; $reason = ''
+    try {
+      $null = Get-ByteSpan -Text $text -CharStart $m.Index -CharEnd ($m.Index + $m.Length) -Enc $enc -Raw $short -BomLen 0
+    } catch {
+      $rejected = $true; $reason = $_.Exception.Message
+    }
+    Assert-True $rejected '越界输入必须被拒绝（不能静默通过）'
+    # ★ 关键：校验拒绝**原因**。只验"拒绝了"不够——下游 Array.Copy 越界也会抛，
+    #   那样删掉"映射越界"这一关仍会绿（审计注入C 就是这种情况）。
+    Assert-True ($reason -match '映射越界') "拒绝原因必须是「映射越界」（实际：$reason）"
+    $sc.status = 'PASS'
+    $sc.observed.rejected = $true
+    $sc.observed.reason = $reason
+    Say ('   观察：按预期拒绝 · ' + $reason)
+  } catch {
+    $sc.status = 'FAIL'
+    $sc.observed.failure = $_.Exception.Message
+    Say ('   观察：没有按预期拒绝 · ' + $_.Exception.Message)
+  }
+  $sc.proves = @('原始字节比文本短（映射越界）时拒绝，且原因可识别（不是下游数组异常）')
+  $sc.notProven = @()
+  Say ('   结果：' + $sc.status)
+  Add-Result $sc
+
   # ── 汇总 ───────────────────────────────────────────────────
   Say ''
   Say ('─' * 72)
@@ -333,7 +370,8 @@ try {
 
   # 只清理**本次运行自己创建**的子目录（$work）；用户传入的 $base 绝不动。
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
-  exit 0
+  # 退出码：FAIL>0 ⇒ 1（给 CI 用；BLOCKED/NOT_TESTED 不算失败）
+  exit $(if ($fail -gt 0) { 1 } else { 0 })
 } catch {
   Write-Host ('⚠️ 探针自己跑不起来（退出码 2）：' + $_.Exception.Message)
   Write-Host $_.ScriptStackTrace

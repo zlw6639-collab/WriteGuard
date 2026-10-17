@@ -77,6 +77,24 @@ jobs:
         shell: pwsh
         run: ./tests/DocCounts.ps1
 
+
+      # ★ 实验探针（独立资产，不进五套件，但必须有人守 —— 防"证据腐烂"）
+      #   2026-10-18 审计：ci.yml 里零匹配 ⇒ 库改了探针结论失效无人知。
+      #   ByteSpanProbe：FAIL>0 ⇒ 退出码 1（映射/字节保真退化必须红）
+      - name: Byte span probe (must be 0 FAIL)
+        shell: pwsh
+        run: ./tests/ByteSpanProbe.ps1
+
+      #   AtomicWriteProbe：只有 FAIL 让 CI 红；BLOCKED（环境权限）与 NOT_TESTED（没跑）**不红**
+      - name: Atomic write probe (FAIL makes CI red; BLOCKED/NOT_TESTED do not)
+        shell: pwsh
+        run: ./tests/AtomicWriteProbe.ps1
+
+      #   探针安全：不得删除用户传入的 -WorkDir（哨兵回归）
+      - name: Probe safety (never deletes user WorkDir)
+        shell: pwsh
+        run: ./tests/ProbeSafetyCheck.ps1
+
       # 差异算法账本：硬判据只有两条 —— 不漏报、5000 行不变慢（误报率只统计不设阈值）
       - name: Diff quality (report vs real changed lines)
         shell: pwsh

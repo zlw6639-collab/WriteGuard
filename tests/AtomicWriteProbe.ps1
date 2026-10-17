@@ -314,7 +314,8 @@ $all = @('CONTENT:') + @($seen | Select-Object -Unique) + @('ERRORS:') + @($errs
 
   # 只清理**本次运行自己创建**的子目录（$work）；用户传入的 $base 绝不动。
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
-  exit 0
+  # 退出码：FAIL>0 ⇒ 1（给 CI 用）；BLOCKED / NOT_TESTED **不算失败**，不让 CI 误红。
+  exit $(if ($fail -gt 0) { 1 } else { 0 })
 } catch {
   Write-Host ('⚠️ 探针自己跑不起来（退出码 2）：' + $_.Exception.Message)
   Write-Host $_.ScriptStackTrace
