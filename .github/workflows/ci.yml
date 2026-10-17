@@ -111,3 +111,13 @@ jobs:
       - name: Entry point (list open items)
         shell: pwsh
         run: ./Start-Here.ps1 -SkipTests
+
+      # ★ 报告留档（2026-10-18 加）：失败时也能下载各套件报告。
+      #   起因：CI 日志是懒加载的，FAIL 行在浏览器里搜不到；artifact 是纯文件，直接看。
+      - name: Upload test reports (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.os }}
+          path: tests/*-latest.txt
+          if-no-files-found: ignore
