@@ -7,3 +7,4 @@ _backup/
 *.zip
 # 探针报告（每次运行变化）
 tests/AtomicWriteProbe-report.json
+tests/ByteSpanProbe-report.json
